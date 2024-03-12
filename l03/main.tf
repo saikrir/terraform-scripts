@@ -1,102 +1,92 @@
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.36"
-    }
-  }
-  required_version = ">= 1.5.0"
-}
-
-
-provider "aws" {
-  region = "us-east-2"
-}
-
-
 resource "aws_vpc" "my_vpc" {
-  cidr_block           = "10.0.0.0/16"
+  cidr_block           = var.vpc_cidr_block
   enable_dns_hostnames = true
-  tags = {
-    Name = "my_vpc"
-  }
+  tags                 = var.my_tags
 }
 
 resource "aws_subnet" "my_private_subnet" {
-  cidr_block = "10.0.1.0/24"
+  cidr_block = var.private_subnet_cidr_block
   vpc_id     = aws_vpc.my_vpc.id
-  tags = {
-    Name = "my_vpc_private_subnet"
-  }
+  tags       = var.my_tags
 }
 
 resource "aws_subnet" "my_public_subnet" {
-  cidr_block              = "10.0.2.0/24"
+  cidr_block              = var.public_subnet_cidr_block
   vpc_id                  = aws_vpc.my_vpc.id
   map_public_ip_on_launch = true
-  tags = {
-    Name = "my_vpc_public_subnet"
-  }
+  tags                    = var.my_tags
 }
 
 
+resource "aws_eip" "my_elastic_ip" {
+  domain = "vpc"
+  tags   = var.my_tags
+}
+
+resource "aws_nat_gateway" "my_nat_gateway" {
+  allocation_id = aws_eip.my_elastic_ip.id
+  subnet_id     = aws_subnet.my_public_subnet.id
+  tags          = var.my_tags
+}
+
 resource "aws_internet_gateway" "my_ig" {
   vpc_id = aws_vpc.my_vpc.id
-  tags = {
-    Name = "my_ig"
-  }
+  tags   = var.my_tags
 }
 
 resource "aws_route_table" "my_vpc_public_rt" {
   vpc_id = aws_vpc.my_vpc.id
   route {
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.any_ip_cidr_block
     gateway_id = aws_internet_gateway.my_ig.id
   }
-  tags = {
-    Name = "my_vpc_public_rt"
+  tags = var.my_tags
+}
+
+resource "aws_route_table" "my_vpc_private_rt" {
+  vpc_id = aws_vpc.my_vpc.id
+  route {
+    cidr_block     = var.any_ip_cidr_block
+    nat_gateway_id = aws_nat_gateway.my_nat_gateway.id
   }
+  tags = var.my_tags
 }
 
 
 resource "aws_security_group" "my_http_sg" {
   vpc_id = aws_vpc.my_vpc.id
   ingress {
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = var.any_cidr_blocks
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
   }
   egress {
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = var.any_cidr_blocks
     from_port   = 0
     to_port     = 0
     protocol    = -1
   }
 
-  tags = {
-    Name = "my_http_sg"
-  }
+  tags = var.my_tags
 }
 
 resource "aws_security_group" "my_ssh_sg" {
   vpc_id = aws_vpc.my_vpc.id
   ingress {
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = var.any_cidr_blocks
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
   }
   egress {
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = var.any_cidr_blocks
     from_port   = 0
     to_port     = 0
     protocol    = -1
   }
 
-  tags = {
-    Name = "my_ssh_sg"
-  }
+  tags = var.my_tags
 }
 
 resource "aws_route_table_association" "my_vpc_public_subnet_rt_assoc" {
@@ -104,39 +94,38 @@ resource "aws_route_table_association" "my_vpc_public_subnet_rt_assoc" {
   route_table_id = aws_route_table.my_vpc_public_rt.id
 }
 
-data "aws_ssm_parameter" "amzn2_linux" {
-  name = "/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2"
+resource "aws_route_table_association" "my_vpc_private_subnet_rt_assoc" {
+  subnet_id      = aws_subnet.my_private_subnet.id
+  route_table_id = aws_route_table.my_vpc_private_rt.id
 }
+
+
+data "aws_ssm_parameter" "amzn2_linux" {
+  name = var.linux_image_path
+}
+
 
 resource "aws_instance" "my_public_aws_instance" {
   ami                    = nonsensitive(data.aws_ssm_parameter.amzn2_linux.value)
   instance_type          = "t2.micro"
   subnet_id              = aws_subnet.my_public_subnet.id
   vpc_security_group_ids = [aws_security_group.my_http_sg.id, aws_security_group.my_ssh_sg.id]
-  user_data              = <<EOF
-#! /bin/bash
-sudo amazon-linux-extras install -y nginx1
-sudo service nginx start
-sudo rm /usr/share/nginx/html/index.html
-echo '<html><head><title>Taco Team Server</title></head><body style=\"background-color:#1F778D\"><p style=\"text-align: center;\"><span style=\"color:#FFFFFF;\"><span style=\"font-size:28px;\">Sai Katterishetty Loves &#127790; and AWS </span></span></p></body></html>' | sudo tee /usr/share/nginx/html/index.html
-EOF
-  tags = {
-    Name = "my_public_aws_instance"
-  }
+  key_name               = var.key_name
+  user_data              = file("${path.module}/${var.web_server_script}")
+  tags                   = var.my_tags
 }
 
 resource "aws_instance" "my_private_aws_instance" {
   ami                    = nonsensitive(data.aws_ssm_parameter.amzn2_linux.value)
   instance_type          = "t2.micro"
+  key_name               = var.key_name
   subnet_id              = aws_subnet.my_private_subnet.id
   vpc_security_group_ids = [aws_security_group.my_ssh_sg.id]
-  tags = {
-    Name = "my_private_aws_instance"
-  }
+  tags                   = var.my_tags
 }
 
-output "aws_instance_public_dns" {
-  value       = "http://${aws_instance.my_public_aws_instance.public_dns}"
-  description = "Public DNS for EC2 instance"
+resource "aws_key_pair" "my_aws_keypair" {
+  key_name   = var.key_name
+  public_key = var.my_public_key
 }
 
